@@ -1,0 +1,91 @@
+---
+- name: Upgrade Flask backend to Gunicorn
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    app_dir: /opt/flask-api
+    venv_dir: /opt/flask-api/venv
+    app_user: azureuser
+    gunicorn_bind: 127.0.0.1:5000
+    gunicorn_workers: 3
+
+  tasks:
+    - name: Ensure required packages are installed
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+
+    - name: Ensure application directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Ensure Python virtual environment exists
+      ansible.builtin.command: python3 -m venv {{ venv_dir }}
+      args:
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: Install Gunicorn in virtual environment
+      ansible.builtin.pip:
+        name:
+          - gunicorn
+          - flask
+        virtualenv: "{{ venv_dir }}"
+
+    - name: Deploy Gunicorn systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/flask-api.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Gunicorn service for Flask API
+          After=network.target
+
+          [Service]
+          User={{ app_user }}
+          Group={{ app_user }}
+          WorkingDirectory={{ app_dir }}
+          ExecStart={{ venv_dir }}/bin/gunicorn --workers {{ gunicorn_workers }} --bind {{ gunicorn_bind }} app:app
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart Flask API service
+
+    - name: Ensure Flask API service is enabled and started
+      ansible.builtin.systemd:
+        name: flask-api
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Verify Gunicorn is listening on port 5000
+      ansible.builtin.shell: ss -tulnp | grep :5000
+      register: gunicorn_check
+      changed_when: false
+
+    - name: Show Gunicorn listener output
+      ansible.builtin.debug:
+        var: gunicorn_check.stdout_lines
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart Flask API service
+      ansible.builtin.systemd:
+        name: flask-api
+        state: restarted
