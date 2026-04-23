@@ -1,0 +1,2 @@
+subscription_id = "your-subscription-id"
+your_public_ip  = "x.x.x.x/32"

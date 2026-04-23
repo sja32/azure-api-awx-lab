@@ -1,0 +1,39 @@
+---
+- name: Deploy NGINX API endpoint
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+
+    - name: Ensure nginx is enabled and running
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Create API response file
+      ansible.builtin.copy:
+        dest: /var/www/html/api.json
+        mode: '0644'
+        content: |
+          {
+            "status": "ok",
+            "message": "Hello from Sharod's Azure API lab",
+            "service": "nginx",
+            "automation": "AWX + Ansible"
+          }
+
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
