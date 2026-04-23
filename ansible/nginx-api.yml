@@ -14,12 +14,6 @@
         name: nginx
         state: present
 
-    - name: Ensure nginx is enabled and running
-      ansible.builtin.service:
-        name: nginx
-        enabled: true
-        state: started
-
     - name: Create API response file
       ansible.builtin.copy:
         dest: /var/www/html/api.json
@@ -32,20 +26,41 @@
             "automation": "AWX + Ansible"
           }
 
-    - name: Configure nginx /api endpoint
-      ansible.builtin.blockinfile:
-        path: /etc/nginx/sites-available/default
-        marker: "# {mark} ANSIBLE API ENDPOINT"
-        insertbefore: '^\s*}\s*$'
-        block: |
-          location = /api {
-              default_type application/json;
-              alias /var/www/html/api.json;
-          }
-      notify: Reload nginx
+    - name: Deploy nginx default site config
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/default
+        mode: '0644'
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
 
-  handlers:
-    - name: Reload nginx
+              root /var/www/html;
+              index index.html index.htm index.nginx-debian.html;
+              server_name _;
+
+              location = /api {
+                  default_type application/json;
+                  alias /var/www/html/api.json;
+              }
+
+              location = /api.json {
+                  return 403;
+              }
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+          }
+      notify: Validate and reload nginx
+
+    - name: Ensure nginx is enabled and running
       ansible.builtin.service:
         name: nginx
-        state: reloaded
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Validate and reload nginx
+      ansible.builtin.shell: nginx -t && systemctl reload nginx
+      changed_when: true
