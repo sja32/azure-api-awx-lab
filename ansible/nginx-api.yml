@@ -1,32 +1,93 @@
 ---
-- name: Deploy NGINX API endpoint
+- name: Deploy Flask backend behind NGINX
   hosts: all
   become: true
   gather_facts: true
+
+  vars:
+    app_dir: /opt/flask-api
+    venv_dir: /opt/flask-api/venv
+    app_user: azureuser
 
   tasks:
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: true
 
-    - name: Install nginx
+    - name: Install required packages
       ansible.builtin.apt:
-        name: nginx
+        name:
+          - nginx
+          - python3
+          - python3-pip
+          - python3-venv
         state: present
 
-    - name: Create API response file
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Create Python virtual environment
+      ansible.builtin.command: python3 -m venv {{ venv_dir }}
+      args:
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: Install Flask in virtual environment
+      ansible.builtin.pip:
+        name: flask
+        virtualenv: "{{ venv_dir }}"
+
+    - name: Deploy Flask application
       ansible.builtin.copy:
-        dest: /var/www/html/api.json
+        dest: "{{ app_dir }}/app.py"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
         mode: '0644'
         content: |
-          {
-            "status": "ok",
-            "message": "Hello from Sharod's Azure API lab",
-            "service": "nginx",
-            "automation": "AWX + Ansible"
-          }
+          from flask import Flask, jsonify
 
-    - name: Deploy nginx default site config
+          app = Flask(__name__)
+
+          @app.route("/api")
+          def api():
+              return jsonify({
+                  "status": "ok",
+                  "message": "Hello from Sharod's real Flask backend",
+                  "service": "flask",
+                  "automation": "AWX + Ansible"
+              })
+
+          if __name__ == "__main__":
+              app.run(host="127.0.0.1", port=5000)
+
+    - name: Create systemd service for Flask app
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/flask-api.service
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Flask API Service
+          After=network.target
+
+          [Service]
+          User={{ app_user }}
+          Group={{ app_user }}
+          WorkingDirectory={{ app_dir }}
+          ExecStart={{ venv_dir }}/bin/python {{ app_dir }}/app.py
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart Flask app
+
+    - name: Deploy nginx reverse proxy config
       ansible.builtin.copy:
         dest: /etc/nginx/sites-available/default
         mode: '0644'
@@ -35,32 +96,46 @@
               listen 80 default_server;
               listen [::]:80 default_server;
 
-              root /var/www/html;
-              index index.html index.htm index.nginx-debian.html;
               server_name _;
 
               location = /api {
-                  default_type application/json;
-                  alias /var/www/html/api.json;
-              }
-
-              location = /api.json {
-                  return 403;
+                  proxy_pass http://127.0.0.1:5000/api;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
               }
 
               location / {
-                  try_files $uri $uri/ =404;
+                  return 404;
               }
           }
-      notify: Validate and reload nginx
+      notify:
+        - Validate and reload nginx
 
-    - name: Ensure nginx is enabled and running
+    - name: Ensure Flask app service is enabled and started
+      ansible.builtin.systemd:
+        name: flask-api
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Ensure nginx is enabled and started
       ansible.builtin.service:
         name: nginx
         enabled: true
         state: started
 
   handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart Flask app
+      ansible.builtin.systemd:
+        name: flask-api
+        state: restarted
+
     - name: Validate and reload nginx
       ansible.builtin.shell: nginx -t && systemctl reload nginx
       changed_when: true
