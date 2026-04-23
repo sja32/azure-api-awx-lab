@@ -5,7 +5,6 @@
   gather_facts: true
 
   tasks:
-
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: true
@@ -33,7 +32,20 @@
             "automation": "AWX + Ansible"
           }
 
-    - name: Restart nginx
+    - name: Configure nginx /api endpoint
+      ansible.builtin.blockinfile:
+        path: /etc/nginx/sites-available/default
+        marker: "# {mark} ANSIBLE API ENDPOINT"
+        insertbefore: '^\s*}\s*$'
+        block: |
+          location = /api {
+              default_type application/json;
+              alias /var/www/html/api.json;
+          }
+      notify: Reload nginx
+
+  handlers:
+    - name: Reload nginx
       ansible.builtin.service:
         name: nginx
-        state: restarted
+        state: reloaded
